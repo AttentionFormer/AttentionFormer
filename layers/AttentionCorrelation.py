@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import math
 from torch.nn.functional import interpolate
+from layers.SelfAttention_Family import FullAttention
 
 
 def decor_time(func):
@@ -32,7 +33,7 @@ class AutoCorrelation(nn.Module):
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
         self.agg = None
-        # self.use_wavelet = configs.wavelet
+        self.use_wavelet = configs.wavelet
 
     # @decor_time
     def time_delay_agg_training(self, values, corr):
@@ -124,19 +125,65 @@ class AutoCorrelation(nn.Module):
             keys = keys[:, :L, :, :]
 
         # period-based dependencies
-        q_fft = torch.fft.rfft(queries.permute(0, 2, 3, 1).contiguous(), dim=-1)
-        k_fft = torch.fft.rfft(keys.permute(0, 2, 3, 1).contiguous(), dim=-1)
-        res = q_fft * torch.conj(k_fft)
-        corr = torch.fft.irfft(res, dim=-1)
+        if self.use_wavelet != 2:
+            if self.use_wavelet == 1:
+                j_list = self.j_list
+                queries = queries.reshape([B, L, -1])
+                keys = keys.reshape([B, L, -1])
+                Ql, Qh_list = self.dwt1d(queries.transpose(1, 2))  # [B, H*D, L]
+                Kl, Kh_list = self.dwt1d(keys.transpose(1, 2))
+                qs = [queries.transpose(1, 2)] + Qh_list + [Ql]  # [B, H*D, L]
+                ks = [keys.transpose(1, 2)] + Kh_list + [Kl]
+                q_list = []
+                k_list = []
+                for q, k, j in zip(qs, ks, j_list):
+                    q_list += [interpolate(q, scale_factor=j, mode='linear')[:, :, -L:]]
+                    k_list += [interpolate(k, scale_factor=j, mode='linear')[:, :, -L:]]
+                queries = torch.stack([i.reshape([B, H, E, L]) for i in q_list], dim=3).reshape([B, H, -1, L]).permute(0, 3, 1, 2)
+                keys = torch.stack([i.reshape([B, H, E, L]) for i in k_list], dim=3).reshape([B, H, -1, L]).permute(0, 3, 1, 2)
+            else:
+                pass
+            q_fft = torch.fft.rfft(queries.permute(0, 2, 3, 1).contiguous(), dim=-1)  # size=[B, H, E, L]
+            k_fft = torch.fft.rfft(keys.permute(0, 2, 3, 1).contiguous(), dim=-1)
+            res = q_fft * torch.conj(k_fft)
+            corr = torch.fft.irfft(res, dim=-1) # size=[B, H, E, L]
 
-        # time delay agg
-        if self.training:
-            V = self.time_delay_agg_training(values.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)
+            # time delay agg
+            if self.training:
+                V = self.time_delay_agg_training(values.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)  # [B, L, H, E], [B, H, E, L] -> [B, L, H, E]
+            else:
+                V = self.time_delay_agg_inference(values.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)
         else:
-            V = self.time_delay_agg_inference(values.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)
+            V_list = []
+            queries = queries.reshape([B, L, -1])
+            keys = keys.reshape([B, L, -1])
+            values = values.reshape([B, L, -1])
+            Ql, Qh_list = self.dwt1d(queries.transpose(1, 2))  # [B, H*D, L]
+            Kl, Kh_list = self.dwt1d(keys.transpose(1, 2))
+            Vl, Vh_list = self.dwt1d(values.transpose(1, 2))
+            qs = Qh_list + [Ql]  # [B, H*D, L]
+            ks = Kh_list + [Kl]
+            vs = Vh_list + [Vl]
+            for q, k, v in zip(qs, ks, vs):
+                q = q.reshape([B, H, E, -1])
+                k = k.reshape([B, H, E, -1])
+                v = v.reshape([B, H, E, -1]).permute(0, 3, 1, 2)
+                q_fft = torch.fft.rfft(q.contiguous(), dim=-1)
+                k_fft = torch.fft.rfft(k.contiguous(), dim=-1)
+                res = q_fft * torch.conj(k_fft)
+                corr = torch.fft.irfft(res, dim=-1)  # [B, H, E, L]
+                if self.training:
+                    V = self.time_delay_agg_training(v.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)
+                else:
+                    V = self.time_delay_agg_inference(v.permute(0, 2, 3, 1).contiguous(), corr).permute(0, 3, 1, 2)
+                V_list += [V]
+            Vl = V_list[-1].reshape([B, -1, H*E]).transpose(1, 2)
+            Vh_list = [i.reshape([B, -1, H*E]).transpose(1, 2) for i in V_list[:-1]]
+            V = self.dwt1div((Vl, Vh_list)).reshape([B, H, E, -1]).permute(0, 3, 1, 2)
+            # corr = self.dwt1div((V_list[-1], V_list[:-1]))
 
         if self.output_attention:
-            return (V.contiguous(), corr.permute(0, 3, 1, 2))
+            return (V.contiguous(), corr.permute(0, 3, 1, 2))  # size = [B, L, H, E]
         else:
             return (V.contiguous(), None)
 
@@ -148,6 +195,8 @@ class AutoCorrelationLayer(nn.Module):
 
         d_keys = d_keys or (d_model // n_heads)
         d_values = d_values or (d_model // n_heads)
+        # d_keys = d_model 
+        # d_values = d_model 
 
         self.inner_correlation = correlation
         self.query_projection = nn.Linear(d_model, d_keys * n_heads)
@@ -164,12 +213,48 @@ class AutoCorrelationLayer(nn.Module):
         queries = self.query_projection(queries).view(B, L, H, -1)
         keys = self.key_projection(keys).view(B, S, H, -1)
         values = self.value_projection(values).view(B, S, H, -1)
+
         out, attn = self.inner_correlation(
             queries,
             keys,
             values,
             attn_mask
         )
-
         out = out.contiguous().view(B, L, -1)
         return self.out_projection(out), attn
+    
+
+class SAttentionLayer(nn.Module):
+    def __init__(self, configs, segmented_v, segmented_ratio):
+        super(SAttentionLayer, self).__init__()
+        self.segmented_v =segmented_v
+        self.segmented_ratio =segmented_ratio
+        self.d_model=configs.d_model
+        self.n_heads=configs.n_heads
+        self.configs=configs
+
+        self.attention_layer=AutoCorrelationLayer(FullAttention(False, configs.factor, attention_dropout=configs.dropout, output_attention=configs.output_attention), 
+                                                  self.d_model, self.n_heads, 
+                 d_keys=None, d_values=None)
+
+
+    def forward(self, queries, keys, values, attn_mask):
+        self.device=queries.device
+
+        c_out=torch.zeros(queries.size()).to(self.device)
+        segmented_q=int(self.segmented_ratio*self.segmented_v)
+        queries_subseq_len=queries.size()[1]//segmented_q
+        keys_subseq_len=values_sebseq_len=keys.size()[1]//self.segmented_v
+
+        
+        for i in range(segmented_q):
+            queries_subseq=queries[:,queries_subseq_len*i:queries_subseq_len*(i+1),:]
+            for j in range(self.segmented_v):
+                keys_subseq=keys[:,keys_subseq_len*j:keys_subseq_len*(j+1),:]
+                values_subseq=values[:,values_sebseq_len*j:values_sebseq_len*(j+1),:]
+                h,attn=self.attention_layer(queries_subseq, keys_subseq, values_subseq, attn_mask)
+                c_out[:,queries_subseq_len*i:queries_subseq_len*(i+1)]+=h
+        
+        out=c_out  
+
+        return out, attn

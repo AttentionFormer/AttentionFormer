@@ -18,10 +18,6 @@ class FullAttention(nn.Module):
         self.mask_flag = mask_flag
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
-        # self.weights1 = nn.Parameter(torch.Tensor(4, in_channels//4 , out_channels//4 , seq_len))
-        # self.weights1 = nn.Parameter(torch.Tensor(4, in_channels//4 , out_channels//4 , seq_len))
-        # self.weights = nn.Parameter(torch.Tensor(4, seq_len_q,seq_len_q, in_channels//4))
-        # self.query_projection = nn.Linear(128, 192)
 
     def forward(self, queries, keys, values, attn_mask):
         B, L, H, E = queries.shape
@@ -29,9 +25,6 @@ class FullAttention(nn.Module):
         scale = self.scale or 1. / sqrt(E)
 
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
-        # scores = self.query_projection(queries).view(B, H, L, -1)
-        # print(queries.shape)
-        # print(scores.shape)
         if self.mask_flag:
             if attn_mask is None:
                 attn_mask = TriangularCausalMask(B, L, device=queries.device)
@@ -39,10 +32,7 @@ class FullAttention(nn.Module):
             scores.masked_fill_(attn_mask.mask, -np.inf)
         
         A = self.dropout(torch.softmax(scale * scores, dim=-1))
-        # print(A.sum()/64)
         V = torch.einsum("bhls,bshd->blhd", A, values)
-        # print(queries.sum(),'a')
-        # print(V.sum(),'b')
 
         if self.output_attention:
             return (V.contiguous(), A)

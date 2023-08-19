@@ -3,37 +3,16 @@ export CUDA_VISIBLE_DEVICES=0
 #cd ..
 
 for model in Attentionformer FEDformer  
-# for model in  FEDformer  
+# for model in  Attentionformer  
 do
 
-# for preLen in   192 336 720
-for preLen in 96
+for preLen in   96 192 336 720
+# for preLen in 96
 do
 
-# for preLen in 24 36 48 60
-# do
-# # illness
-# python -u run.py \
-#  --is_training 1 \
-#  --root_path ./dataset/illness/ \
-#  --data_path national_illness.csv \
-#  --task_id ili \
-#  --model $model \
-#  --data custom \
-#  --features M \
-#  --seq_len 36 \
-#  --label_len 18 \
-#  --pred_len $preLen \
-#  --e_layers 2 \
-#  --d_layers 1 \
-#  --factor 3 \
-#  --enc_in 7 \
-#  --dec_in 7 \
-#  --c_out 7 \
-#  --des 'Exp' \
-#  --itr 3
-# done
 
+
+#Electricity
 python -u run.py \
  --is_training 1 \
  --root_path ./dataset/electricity/ \
@@ -52,7 +31,9 @@ python -u run.py \
  --dec_in 321 \
  --c_out 321 \
  --des 'Exp' \
- --itr 3
+ --segmented_v 16 \
+ --segmented_ratio 0.5\
+ --itr 3 
 
 
 
@@ -119,7 +100,6 @@ python -u run.py \
  --c_out 862 \
  --des 'Exp' \
  --itr 3 \
- --train_epochs 3
 
 
 
@@ -144,7 +124,30 @@ python -u run.py \
   --des 'Exp' \
   --d_model 512 \
   --itr 3 \
-  --train_epochs 10
 
+
+for preLen in 24 36 48 60
+do
+# illness
+python -u run.py \
+ --is_training 1 \
+ --root_path ./dataset/illness/ \
+ --data_path national_illness.csv \
+ --task_id ili \
+ --model $model \
+ --data custom \
+ --features M \
+ --seq_len 36 \
+ --label_len 18 \
+ --pred_len $preLen \
+ --e_layers 2 \
+ --d_layers 1 \
+ --factor 3 \
+ --enc_in 7 \
+ --dec_in 7 \
+ --c_out 7 \
+ --des 'Exp' \
+ --itr 3
+done
 done
 done

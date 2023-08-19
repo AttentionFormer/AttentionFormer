@@ -56,7 +56,7 @@ class AttentionFormerLayer(nn.Module):
     """
     Autoformer decoder layer with the progressive decomposition architecture
     """
-    def __init__(self, feed_forward,cross_attention,forth_attention, d_model, c_out, d_ff=None,
+    def __init__(self, feed_forward,self_attention,cross_attention, d_model, c_out, d_ff=None,
                  moving_avg=25, dropout=0.1, activation="relu"):
         super(AttentionFormerLayer, self).__init__()
         d_ff = d_ff or 4 * d_model
@@ -68,11 +68,11 @@ class AttentionFormerLayer(nn.Module):
 
        
         
-        self.third_attention = cross_attention
-        self.third_attention2 =  SAttentionLayer(cross_attention.configs,
-                        cross_attention.segmented_v, cross_attention.segmented_ratio)
+        self.third_attention = self_attention
+        self.third_attention2 =  SAttentionLayer(self_attention.configs,
+                        self_attention.segmented_v, self_attention.segmented_ratio)
         
-        self.forth_attention=forth_attention
+        self.forth_attention=cross_attention
 
         self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1, bias=False)
         self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1, bias=False)
@@ -84,7 +84,7 @@ class AttentionFormerLayer(nn.Module):
         else:
             self.decomp1 = series_decomp(moving_avg)
             self.decomp2 = series_decomp(moving_avg)
-            self.decomp3 = series_decomp(moving_avg)
+            self.decomp3 = series_decomp(moving_avg) 
 
         self.dropout = nn.Dropout(dropout)
         self.projection = nn.Conv1d(in_channels=d_model, out_channels=c_out, kernel_size=3, stride=1, padding=1,
@@ -104,47 +104,22 @@ class AttentionFormerLayer(nn.Module):
             attn_mask=cross_mask
         )[0])
 
-        # cross = cross + self.dropout(self.cross_attention(
-        #     cross, cross, cross,
-        #     attn_mask=cross_mask
-        # )[0])
-  
-
-        # x = x+ self.dropout(self.third_attention(
-        #     x, cross, cross,
-        #     attn_mask=cross_mask
-        # )[0])
 
         x = x+ self.dropout(self.third_attention(
             x, x, x,
             attn_mask=cross_mask
         )[0])
 
-        cross = cross+ self.dropout(self.third_attention2(
-            cross, cross, cross,
-            attn_mask=cross_mask
-        )[0])
+        # cross = cross+ self.dropout(self.third_attention2(
+        #     cross, cross, cross,
+        #     attn_mask=cross_mask
+        # )[0])
 
         x = x+ self.dropout(self.forth_attention(
             x, cross, cross,
             attn_mask=cross_mask
         )[0])
         
-        # x = x+ self.dropout(self.third_attention(
-        #     cross, x, x,
-        #     attn_mask=cross_mask
-        # )[0])
-        
-
-        # x, trend2 = self.decomp2(x)
-        # y = x
-        # y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
-        # y = self.dropout(self.conv2(y).transpose(-1, 1))
-        # x, trend3 = self.decomp3(x + y)
-
-        # residual_trend = trend1 + trend2 + trend3
-        # residual_trend = trend2 + trend3
-        # residual_trend = self.projection(residual_trend.permute(0, 2, 1)).transpose(1, 2)
         residual_trend=x
 
         return x, residual_trend
@@ -183,7 +158,6 @@ class Model(nn.Module):
         decoder_self_att = FeedForward(in_channels=configs.d_model,
                                             out_channels=configs.d_model,
                                             seq_len=self.seq_len//2+self.pred_len)
-        decoder_self_att2 = FeedForward(example=decoder_self_att)
         print(configs.d_model,self.seq_len,configs.modes,configs.mode_select)
         # Encoder
         enc_modes = int(min(configs.modes, configs.seq_len//2))
@@ -196,7 +170,8 @@ class Model(nn.Module):
                 AttentionFormerLayer(
                     AutoCorrelationLayer(decoder_self_att,configs.d_model, configs.n_heads),
                     SAttentionLayer(configs,configs.segmented_v, configs.segmented_ratio),
-                    SAttentionLayer(configs,configs.segmented_v, configs.segmented_ratio),
+                    # SAttentionLayer(configs,configs.segmented_v, configs.segmented_ratio),
+                    SAttentionLayer(configs,2,2),
                     configs.d_model,
                     configs.c_out,
                     configs.d_ff,

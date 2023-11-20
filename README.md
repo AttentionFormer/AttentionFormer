@@ -26,8 +26,11 @@ https://github.com/MAZiqing/FEDformer
 markdown
 # CAAI人工智能研究（英文）
 主管单位：中国科学技术学会
+
 主办单位：中国人工智能学会 清华大学
+
 主编：戴琼海
+
 出版发行：清华大学出版社
 
 # “具身智能”专辑征稿
